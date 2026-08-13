@@ -65,7 +65,7 @@ jobs:
       - uses: extractions/setup-just@v2
 
       - name: Cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ env.CONAN_USER_HOME }}
@@ -125,7 +125,7 @@ jobs:
       - uses: extractions/setup-just@v2
 
       - name: Cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ env.CONAN_USER_HOME }}
