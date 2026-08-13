@@ -1,0 +1,15 @@
+/build*
+/dist*
+/instdir*
+/out*
+
+/.vs
+/.vscode
+.DS_Store
+
+imgui.ini
+**/*.h
+
+venv/
+CMakeFiles/
+CMakeCache.txt

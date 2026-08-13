@@ -1,0 +1,187 @@
+name: build
+
+on:
+  workflow_dispatch:
+  # Ensure the build works on main
+  push:
+    branches: [main]
+    tags: ['*']
+  # Ensure the build works on each pull request
+  pull_request:
+
+env:
+  # Vulkan version
+  UNIX_VULKAN_VERSION: 1.2.198
+  WINDOWS_VULKAN_VERSION: 1.2.198.1
+
+  # Conan cache environment variables
+  CONAN_SYSREQUIRES_MODE: enabled
+  CONAN_USER_HOME: "${{ github.workspace }}/conan-cache"
+  CONAN_USER_HOME_SHORT: "${{ github.workspace }}/conan-cache/short"
+
+  # Cache
+  PIP_CACHE_DIR: "${{ github.workspace }}/pip-cache"
+  CHOCO_CACHE_DIR: "${{ github.workspace }}/choco-cache"
+  CPM_SOURCE_CACHE: "${{ github.workspace }}/cpm_modules"
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v2
+
+      - name: Check
+        run: just fmt
+
+  generate-matrix:
+    runs-on: ubuntu-22.04
+
+    outputs:
+      include: ${{ steps.set-matrix.outputs.include }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v2
+
+      - id: set-matrix
+        run: |
+          MATRIX=$(just ci-matrix | jq -sc)
+          echo "$MATRIX"
+          echo "include=$MATRIX" >> $GITHUB_OUTPUT
+
+  linux:
+    runs-on: ubuntu-20.04
+    needs: [generate-matrix, check]
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.generate-matrix.outputs.include) }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v2
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.CONAN_USER_HOME }}
+            ${{ env.PIP_CACHE_DIR }}
+            ${{ env.CHOCO_CACHE_DIR }}
+            ${{ env.CPM_SOURCE_CACHE }}
+          key: linux-cache
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Conan
+        run: python -m pip install conan==1.*
+
+      - uses: ./.github/actions/install-clang
+        if: matrix.compiler == 'clang'
+        with:
+          clang_version: ${{ matrix.version }}
+
+      - name: Install GCC
+        if: matrix.compiler == 'gcc'
+        run: |
+          sudo apt-get update
+          sudo apt-get install gcc-${{ matrix.version }} g++-${{ matrix.version }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install $(grep -vE "^\s*#" ./.github/apt-requirements.txt | tr "\n" " ")
+
+      - uses: ./.github/actions/install-vulkan
+        with:
+          vulkan_version: ${{ env.UNIX_VULKAN_VERSION }}
+
+      - name: Build
+        run: just release
+        env:
+          CXX: ${{ matrix.cxx }}
+
+      - name: Test
+        run: just test
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          path: dist
+          name: ubuntu-${{ matrix.cxx }}
+
+  windows:
+    runs-on: windows-2019
+    needs: [check]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v2
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.CONAN_USER_HOME }}
+            ${{ env.PIP_CACHE_DIR }}
+            ${{ env.CHOCO_CACHE_DIR }}
+            ${{ env.CPM_SOURCE_CACHE }}
+          key: windows-cache
+
+      - name: Install dependencies
+        run: |
+          choco config set cacheLocation ${{ env.CHOCO_CACHE_DIR }}
+          choco install ninja cmake
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Conan
+        run: python -m pip install conan==1.*
+
+      - uses: ./.github/actions/install-vulkan
+        with:
+          vulkan_version: ${{ env.WINDOWS_VULKAN_VERSION }}
+
+      - name: Build
+        run: just release
+        env:
+          VULKAN_SDK: "C:\\VulkanSDK\\${{ env.WINDOWS_VULKAN_VERSION }}"
+
+      - name: Test
+        run: just test
+        env:
+          CTEST_OUTPUT_ON_FAILURE: 1
+          VULKAN_SDK: "C:\\VulkanSDK\\${{ env.WINDOWS_VULKAN_VERSION }}"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          path: dist
+          name: windows-msvc
+
+  docs:
+    runs-on: ubuntu-22.04
+    needs: [linux]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ubuntu-g++-9
+          path: ${{ runner.workspace }}
+
+      - name: Publish
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ${{ runner.workspace }}/docs/doxygen/html
